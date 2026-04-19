@@ -2,6 +2,41 @@
 
 Monitoring kualitas air (ESP32 → MQTT → InfluxDB) dengan **API FastAPI**, **dashboard React**, dan **Grafana**.
 
+## Arsitektur (visual)
+
+Diagram berikut **otomatis tampil di GitHub** (Mermaid). Untuk penjelasan lebih detail, port, dan diagram permintaan API, lihat **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+```mermaid
+flowchart TB
+  subgraph sense [Lapangan]
+    ESP32["ESP32\nfirmware"]
+  end
+  subgraph net [Jaringan]
+    MQTT["MQTT_broker"]
+  end
+  subgraph host [Host_opsional]
+    Bridge["bridge_s2.py"]
+  end
+  subgraph docker [Docker_Compose]
+    Influx["InfluxDB"]
+    Grafana["Grafana"]
+    Backend["FastAPI_backend"]
+    Front["React_nginx"]
+  end
+  subgraph user [Pengguna]
+    Browser["Browser"]
+  end
+
+  ESP32 -->|"publish_JSON"| MQTT
+  MQTT --> Bridge
+  Bridge -->|"write"| Influx
+  Backend -->|"Flux_read"| Influx
+  Grafana -->|"Flux_read"| Influx
+  Browser --> Front
+  Browser --> Grafana
+  Front -->|"REST"| Backend
+```
+
 ## Arsitektur singkat
 
 | Komponen | Port host (default) | Keterangan |
