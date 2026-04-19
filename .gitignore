@@ -1,1 +1,9 @@
 .env
+backend/.env
+frontend/.env
+node_modules/
+frontend/dist/
+backend/logs/*.csv
+__pycache__/
+.pytest_cache/
+*.pyc
