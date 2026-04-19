@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -26,6 +27,11 @@ INFLUX_MEASUREMENT = os.environ.get("INFLUX_MEASUREMENT", "tilapia")
 MQTT_HOST = os.environ.get("MQTT_HOST", "192.168.43.130")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "s2/water/monitoring")
+# ID unik bawaan menghindari bentrok (rc=7 loop): dua bridge / broker kick sesi lama.
+MQTT_CLIENT_ID = os.environ.get(
+    "MQTT_CLIENT_ID", f"bridge_s2_{uuid.uuid4().hex[:10]}"
+)
+MQTT_KEEPALIVE = int(os.environ.get("MQTT_KEEPALIVE", "120"))
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("bridge_s2")
@@ -80,16 +86,22 @@ def main() -> None:
             log.error("[ERR] Gagal menyimpan ke InfluxDB: %s", e)
 
     def on_disconnect(client, _userdata, rc):
-        if rc != 0:
-            log.warning("[*] MQTT terputus (rc=%s), mencoba reconnect...", rc)
+        if rc == 0:
+            log.info("[*] MQTT disconnect normal (rc=0).")
+        else:
+            # Paho: 7 = MQTT_ERR_CONN_LOST (koneksi putus dari broker/jaringan)
+            hint = " (conn_lost: cek bentrok client_id, broker, WiFi)" if rc == 7 else ""
+            log.warning("[*] MQTT terputus (rc=%s)%s — reconnect...", rc, hint)
 
-    mqttc = mqtt.Client(client_id="bridge_s2_python", protocol=mqtt.MQTTv311)
+    mqttc = mqtt.Client(client_id=MQTT_CLIENT_ID, protocol=mqtt.MQTTv311)
     mqttc.on_connect = on_connect
     mqttc.on_message = on_message
     mqttc.on_disconnect = on_disconnect
+    mqttc.reconnect_delay_set(min_delay=1, max_delay=60)
 
     try:
-        mqttc.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+        log.info("[*] MQTT client_id=%s (set MQTT_CLIENT_ID untuk nilai tetap)", MQTT_CLIENT_ID)
+        mqttc.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
         mqttc.loop_forever()
     except KeyboardInterrupt:
         log.info("[*] Berhenti.")
