@@ -14,11 +14,7 @@ services:
       - DOCKER_INFLUXDB_INIT_BUCKET=tilapia_monitoring
     restart: always
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "wget -q -O- http://127.0.0.1:8086/health >/dev/null 2>&1 || exit 1",
-        ]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8086/health"]
       interval: 10s
       timeout: 5s
       retries: 6
