@@ -4,7 +4,7 @@ Monitoring kualitas air (ESP32 → MQTT → InfluxDB) dengan **API FastAPI**, **
 
 ## Arsitektur (visual)
 
-Diagram berikut **otomatis tampil di GitHub** (Mermaid). Untuk penjelasan lebih detail, port, dan diagram permintaan API, lihat **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+Diagram berikut **otomatis tampil di GitHub** (Mermaid). Untuk penjelasan lebih detail, port, dan diagram permintaan API, lihat **[ARCHITECTURE.md](ARCHITECTURE.md)**. **Pseudocode** alur logika (ESP32, bridge, API, AI placeholder, frontend): **[PSEUDOCODE.md](PSEUDOCODE.md)**.
 
 ```mermaid
 flowchart TB
