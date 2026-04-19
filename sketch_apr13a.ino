@@ -1,125 +1,121 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-// ================= 1. PENGATURAN PIN =================
-const int pinSensorSuhu = 4;   // DS18B20 di Pin P4
-const int pinTurbidity  = 32;  // Kekeruhan di Pin P32 (Via Resistor!)
-const int pinSensorPH   = 34;  // pH Meter (PO) di Pin P34
-const int pinSensorTDS  = 35;  // TDS di Pin P35
+// --- KONFIGURASI ---
+const char* ssid = "wifi-mamat"; 
+const char* password = "naginata124568910"; 
+const char* mqtt_server = "192.168.43.130"; 
+const int mqtt_port = 1883;
+const char* mqtt_topic = "s2/water/monitoring";
 
-// ================= 2. PENGATURAN OLED =================
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// --- PIN & SENSOR ---
+const int pinSensorSuhu = 4;   
+const int pinSensorPH   = 34;  
+const int pinSensorTDS  = 35;  
+
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-
-// ================= 3. INISIALISASI SENSOR =================
 OneWire oneWire(pinSensorSuhu);
 DallasTemperature sensorSuhu(&oneWire);
 
+float voltPH4 = 3.100; 
+float voltPH9 = 2.730; 
+unsigned long lastSend = 0; 
+
+void setup_wifi() {
+  delay(100);
+  display.clearDisplay();
+  display.setCursor(0,10); display.println("CONNECTING WIFI...");
+  display.display();
+
+  WiFi.begin(ssid, password);
+  // Set daya WiFi ke minimum agar tidak menyedot banyak listrik di awal
+  WiFi.setTxPower(WIFI_POWER_11dBm); 
+
+  int counter = 0;
+  while (WiFi.status() != WL_CONNECTED && counter < 20) {
+    delay(500);
+    Serial.print(".");
+    counter++;
+  }
+  
+  if(WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi Terhubung!");
+  } else {
+    Serial.println("\nWiFi Gagal/Timeout!");
+  }
+}
+
+void reconnect() {
+  if (!client.connected()) {
+    String clientId = "ESP32_S2_" + String(random(0xffff), HEX);
+    if (client.connect(clientId.c_str())) {
+      client.setKeepAlive(30);
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
-  delay(2000); 
   
-  Serial.println("\n--- Sistem S2: Memulai Semua Sensor ---");
-
-  // Inisialisasi OLED (Menggunakan alamat 0x3C yang sudah sukses)
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("GAGAL! Layar OLED tidak merespons.");
-    for(;;); 
-  }
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) for(;;);
   
   display.clearDisplay();
   display.setTextSize(1);             
   display.setTextColor(SSD1306_WHITE);
-  display.drawRect(0, 0, 128, 64, SSD1306_WHITE);
-  display.setCursor(10, 25);            
-  display.println("MEMUAT SEMUA SENSOR");
+  display.setCursor(0, 25); display.println("SYSTEM STARTING...");
   display.display();
 
-  // Menyalakan Sensor Suhu
+  setup_wifi(); 
+  client.setServer(mqtt_server, mqtt_port);
   sensorSuhu.begin();
-  delay(2000); 
+  delay(1000); 
 }
 
 void loop() {
-  // ================= BACA SUHU & TDS =================
-  sensorSuhu.requestTemperatures(); 
-  float suhuC = sensorSuhu.getTempCByIndex(0);
-
-  int nilaiAnalogTDS = analogRead(pinSensorTDS);
-  float teganganTDS = (nilaiAnalogTDS * 3.3) / 4095.0;
-  
-  // Kompensasi Suhu untuk TDS
-  float suhuKompensasi = (suhuC > 0 && suhuC < 80) ? suhuC : 25.0; 
-  float koefisienKompensasi = 1.0 + 0.02 * (suhuKompensasi - 25.0);
-  float teganganKompensasi = teganganTDS / koefisienKompensasi;
-  float nilaiTDS = (133.42 * pow(teganganKompensasi, 3) - 255.86 * pow(teganganKompensasi, 2) + 857.39 * teganganKompensasi) * 0.5;
-  if (nilaiTDS < 0 || nilaiAnalogTDS < 10) nilaiTDS = 0;
-
-  // ================= BACA KEKERUHAN (TURBIDITY) =================
-// ================= BACA KEKERUHAN (TURBIDITY) =================
-  int nilaiAnalogKeruh = analogRead(pinTurbidity);
-  float teganganPinKeruh = (nilaiAnalogKeruh * 3.3) / 4095.0;
-  
-  // Menggunakan pengali 2.0 karena pakai 2 resistor 4.7k
-  float teganganAsliKeruh = teganganPinKeruh * 2.0; 
-  
-  float persentaseKekeruhan = 0;
-
-  // Kalibrasi berdasarkan data Anda: 
-  // Jika tegangan asli di atas 4.2V, itu air sangat bening (0%)
-  // Jika tegangan asli di bawah 2.5V, itu mulai sangat keruh
-  if(teganganAsliKeruh >= 4.20) {
-    persentaseKekeruhan = 0;
-  } else if (teganganAsliKeruh <= 2.50) {
-    persentaseKekeruhan = 100;
-  } else {
-    // Memetakan sisa rentang antara 4.2V sampai 2.5V ke 0% sampai 100%
-    persentaseKekeruhan = (4.20 - teganganAsliKeruh) / (4.20 - 2.50) * 100.0;
+  // Hanya jalankan MQTT jika WiFi terhubung
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!client.connected()) reconnect();
+    client.loop();
   }
-  // ================= BACA SENSOR pH =================
-  int nilaiAnalogPH = analogRead(pinSensorPH);
-  float teganganPH = (nilaiAnalogPH * 3.3) / 4095.0;
-  
-  // ⚠️ GANTI RUMUS DI BAWAH INI JIKA SUDAH KALIBRASI!
-  float nilaiPH = -5.70 * teganganPH + 21.34; 
-  
-  if(nilaiPH < 0) nilaiPH = 0;
-  if(nilaiPH > 14) nilaiPH = 14;
 
-  // ================= TAMPILKAN KE SERIAL MONITOR =================
-  Serial.print("Suhu: "); Serial.print(suhuC); Serial.print("C | ");
-  Serial.print("TDS: "); Serial.print((int)nilaiTDS); Serial.print("ppm | ");
-  Serial.print("pH: "); Serial.print(nilaiPH, 2); Serial.print(" (Volt: "); Serial.print(teganganPH, 3); Serial.print(") | ");
-  Serial.print("Keruh: "); Serial.print((int)persentaseKekeruhan); 
-  Serial.print("% (Volt ESP: "); Serial.print(teganganPinKeruh, 2); 
-  Serial.print("V, Asli: "); Serial.print(teganganAsliKeruh, 2); Serial.println("V)");
+  unsigned long now = millis();
+  if (now - lastSend > 5000) { 
+    lastSend = now;
 
-  // ================= TAMPILKAN KE LAYAR OLED =================
-  display.clearDisplay();
+    // BACA SENSOR
+    sensorSuhu.requestTemperatures(); 
+    float suhuC = sensorSuhu.getTempCByIndex(0);
+    int rawTDS = analogRead(pinSensorTDS);
+    float vTDS = (rawTDS * 3.3) / 4095.0;
+    float nTDS = (133.42 * pow(vTDS, 3) - 255.86 * pow(vTDS, 2) + 857.39 * vTDS) * 0.5;
 
-  // Header
-  display.setCursor(0, 0);
-  display.println("--- MONITOR S2 ---");
+    long pH_sum = 0;
+    for(int i=0; i<10; i++) { pH_sum += analogRead(pinSensorPH); delay(5); }
+    float vPH = ( (pH_sum/10.0) * 3.3) / 4095.0;
+    float nPH = ((9.01 - 4.01) / (voltPH9 - voltPH4)) * (vPH - voltPH4) + 4.01;
 
-  // Kolom Kiri
-  display.setCursor(0, 16);
-  display.print("Suhu : "); display.print(suhuC, 1); display.print(" C");
-  
-  display.setCursor(0, 28);
-  display.print("pH   : "); display.print(nilaiPH, 1);
+    // UPDATE OLED
+    display.clearDisplay();
+    display.setCursor(0, 0);  display.println("--- MONITOR S2 ---");
+    display.setCursor(0, 20); display.printf("Suhu : %.1f C", suhuC);
+    display.setCursor(0, 35); display.printf("pH   : %.2f", nPH);
+    display.setCursor(0, 50); display.printf("TDS  : %.0f ppm", nTDS);
+    display.display();
 
-  // Kolom Kanan / Bawah
-  display.setCursor(0, 40);
-  display.print("TDS  : "); display.print((int)nilaiTDS); display.print(" ppm");
-
-  display.setCursor(0, 52);
-  display.print("Keruh: "); display.print((int)persentaseKekeruhan); display.print(" %");
-
-  display.display();
-
-  delay(2000); // Jeda 2 detik agar pembacaan stabil
+    // KIRIM MQTT (Hanya jika terkoneksi)
+    if (client.connected()) {
+      String payload = "{\"suhu\":"+String(suhuC,1)+",\"ph\":"+String(nPH,2)+",\"tds\":"+String(nTDS,0)+"}";
+      client.publish(mqtt_topic, payload.c_str());
+    }
+  }
 }
