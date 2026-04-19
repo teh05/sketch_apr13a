@@ -19,6 +19,8 @@ Cek: `docker ps` — container `influxdb_s2` dan `grafana_s2` harus **Up**.
 
 ## 3. Variabel lingkungan untuk bridge
 
+**Cara disarankan:** buat file **`.env`** di folder proyek (tidak di-commit; ada di `.gitignore`). Salin dari [`.env.example`](.env.example), lalu isi `INFLUX_TOKEN`. `bridge_s2.py` memuat `.env` otomatis lewat `python-dotenv`.
+
 Wajib:
 
 - `INFLUX_TOKEN` — token dari langkah 2.
@@ -35,7 +37,13 @@ Opsional (default sudah cocok dengan compose + firmware):
 | `MQTT_PORT` | `1883` | |
 | `MQTT_TOPIC` | `s2/water/monitoring` | |
 
-**PowerShell (sesi saat ini):**
+Setelah `.env` berisi token, cukup:
+
+```powershell
+python bridge_s2.py
+```
+
+**Alternatif** — set variabel di PowerShell (mengoverride `.env` untuk sesi itu):
 
 ```powershell
 $env:INFLUX_TOKEN = "paste-token-di-sini"

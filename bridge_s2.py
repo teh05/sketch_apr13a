@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
 MQTT subscriber -> InfluxDB v2 (bucket tilapia_monitoring).
-Konfigurasi via environment variables; lihat SETUP_STACK.md.
+Konfigurasi via file .env (lokal) atau environment variables; lihat SETUP_STACK.md.
 """
 
 import json
 import logging
 import os
 import sys
+from pathlib import Path
 
+from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 INFLUX_URL = os.environ.get("INFLUX_URL", "http://127.0.0.1:8086")
 INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN", "").strip()
