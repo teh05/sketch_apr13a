@@ -20,13 +20,38 @@ services:
       retries: 6
       start_period: 25s
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: tilapia_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: tilapia
+      POSTGRES_PASSWORD: tilapia_s2_secure
+      POSTGRES_DB: tilapia_analytics
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tilapia -d tilapia_analytics"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   grafana:
     image: grafana/grafana:latest
     container_name: grafana_s2
     ports:
       - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
     volumes:
       - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       influxdb:
         condition: service_healthy
@@ -41,9 +66,12 @@ services:
       - backend/.env
     environment:
       INFLUX_URL: http://influxdb:8086
+      DATABASE_URL: postgresql://tilapia:tilapia_s2_secure@postgres:5432/tilapia_analytics
       CORS_ORIGINS: http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081
     depends_on:
       influxdb:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     restart: always
     volumes:
@@ -64,3 +92,4 @@ services:
 volumes:
   influxdb_data:
   grafana_data:
+  postgres_data:

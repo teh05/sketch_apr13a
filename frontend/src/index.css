@@ -1,12 +1,47 @@
 @import "tailwindcss";
 
+:root {
+  --bg-primary: #0f1419;
+  --bg-card: #1a2332;
+  --bg-card-hover: #1f2a3a;
+  --bg-surface: #141c27;
+  --border: #2a3444;
+  --border-light: #354158;
+
+  --text-primary: #e8edf4;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --accent-safe: #6ee7b7;
+  --accent-warning: #fcd34d;
+  --accent-danger: #fca5a5;
+  --accent-critical: #f87171;
+  --accent-info: #7dd3fc;
+
+  --chart-suhu: #5eead4;
+  --chart-ph: #7dd3fc;
+  --chart-tds: #c4b5fd;
+  --chart-grid: #2a3444;
+
+  --zone-ideal-bg: rgba(110, 231, 183, 0.08);
+  --zone-warn-bg: rgba(252, 211, 77, 0.08);
+  --zone-danger-bg: rgba(252, 165, 165, 0.08);
+}
+
 body {
   margin: 0;
   min-height: 100vh;
-  background: #09090b;
-  color: #fafafa;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 #root {
   min-height: 100vh;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-light) transparent;
 }

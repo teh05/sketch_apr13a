@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
 MQTT subscriber -> InfluxDB v2 (bucket tilapia_monitoring).
-Konfigurasi via file .env (lokal) atau environment variables; lihat SETUP_STACK.md.
+
+Features:
+  - Validates JSON payload structure
+  - Optional SHA256 signature verification (if 'sig' field present)
+  - Structured logging with timestamps
 """
 
+import hashlib
 import json
 import logging
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,14 +33,27 @@ INFLUX_MEASUREMENT = os.environ.get("INFLUX_MEASUREMENT", "tilapia")
 MQTT_HOST = os.environ.get("MQTT_HOST", "192.168.43.130")
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "s2/water/monitoring")
-# ID unik bawaan menghindari bentrok (rc=7 loop): dua bridge / broker kick sesi lama.
 MQTT_CLIENT_ID = os.environ.get(
     "MQTT_CLIENT_ID", f"bridge_s2_{uuid.uuid4().hex[:10]}"
 )
 MQTT_KEEPALIVE = int(os.environ.get("MQTT_KEEPALIVE", "120"))
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+PAYLOAD_SECRET = os.environ.get("PAYLOAD_SECRET", "tilapia_iot_s2_key")
+VERIFY_SIGNATURE = os.environ.get("VERIFY_SIGNATURE", "false").lower() == "true"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 log = logging.getLogger("bridge_s2")
+
+
+def verify_sig(suhu: float, ph: float, tds: float, sig: str) -> bool:
+    """Verify SHA256 signature from ESP32 payload."""
+    raw = f"{suhu:.1f}|{ph:.2f}|{tds:.0f}|{PAYLOAD_SECRET}"
+    expected = hashlib.sha256(raw.encode()).hexdigest()
+    return sig == expected
 
 
 def parse_payload(raw: str) -> dict:
@@ -46,12 +65,28 @@ def parse_payload(raw: str) -> dict:
         tds = int(round(tds))
     else:
         tds = int(tds)
-    return {"suhu": suhu, "ph": ph, "tds": tds}
+
+    result = {"suhu": suhu, "ph": ph, "tds": tds}
+
+    if "status" in data:
+        result["status"] = str(data["status"])
+    if "device" in data:
+        result["device"] = str(data["device"])
+
+    sig = data.get("sig")
+    if sig and VERIFY_SIGNATURE:
+        if not verify_sig(suhu, ph, tds, sig):
+            raise ValueError("Signature mismatch — payload may be tampered")
+        log.info("Signature verified OK")
+    elif sig:
+        log.debug("Signature present but VERIFY_SIGNATURE=false, skipping check")
+
+    return result
 
 
 def main() -> None:
     if not INFLUX_TOKEN:
-        log.error("[ERR] Set environment variable INFLUX_TOKEN (InfluxDB API token).")
+        log.error("Set environment variable INFLUX_TOKEN (InfluxDB API token).")
         sys.exit(1)
 
     influx = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
@@ -59,20 +94,30 @@ def main() -> None:
 
     def on_connect(client, _userdata, _flags, rc):
         if rc == 0:
-            log.info("[*] Terhubung ke MQTT broker %s:%s", MQTT_HOST, MQTT_PORT)
+            log.info("Connected to MQTT broker %s:%s", MQTT_HOST, MQTT_PORT)
             client.subscribe(MQTT_TOPIC)
-            log.info("[*] Subscribe: %s", MQTT_TOPIC)
+            log.info("Subscribed: %s", MQTT_TOPIC)
         else:
-            log.error("[ERR] MQTT connect gagal, rc=%s", rc)
+            log.error("MQTT connect failed, rc=%s", rc)
 
     def on_message(client, _userdata, msg):
         raw = msg.payload.decode("utf-8", errors="replace")
+        ts = datetime.now(timezone.utc).isoformat()
         try:
             fields = parse_payload(raw)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-            log.error("[ERR] Payload tidak valid: %s | error=%s", raw, e)
+            log.error("Invalid payload: %s | error=%s", raw, e)
             return
-        log.info("[*] Masuk: %s", fields)
+
+        log.info(
+            "Received: suhu=%.1f ph=%.2f tds=%d status=%s device=%s",
+            fields["suhu"],
+            fields["ph"],
+            fields["tds"],
+            fields.get("status", "—"),
+            fields.get("device", "—"),
+        )
+
         try:
             point = (
                 Point(INFLUX_MEASUREMENT)
@@ -81,17 +126,16 @@ def main() -> None:
                 .field("tds", fields["tds"])
             )
             write_api.write(bucket=INFLUX_BUCKET, org=INFLUX_ORG, record=point)
-            log.info("[OK] Berhasil disimpan ke InfluxDB bucket=%s", INFLUX_BUCKET)
+            log.info("Written to InfluxDB bucket=%s", INFLUX_BUCKET)
         except Exception as e:
-            log.error("[ERR] Gagal menyimpan ke InfluxDB: %s", e)
+            log.error("InfluxDB write failed: %s", e)
 
     def on_disconnect(client, _userdata, rc):
         if rc == 0:
-            log.info("[*] MQTT disconnect normal (rc=0).")
+            log.info("MQTT disconnect normal (rc=0).")
         else:
-            # Paho: 7 = MQTT_ERR_CONN_LOST (koneksi putus dari broker/jaringan)
-            hint = " (conn_lost: cek bentrok client_id, broker, WiFi)" if rc == 7 else ""
-            log.warning("[*] MQTT terputus (rc=%s)%s — reconnect...", rc, hint)
+            hint = " (conn_lost: check client_id conflict, broker, WiFi)" if rc == 7 else ""
+            log.warning("MQTT disconnected (rc=%s)%s — reconnecting...", rc, hint)
 
     mqttc = mqtt.Client(client_id=MQTT_CLIENT_ID, protocol=mqtt.MQTTv311)
     mqttc.on_connect = on_connect
@@ -100,11 +144,12 @@ def main() -> None:
     mqttc.reconnect_delay_set(min_delay=1, max_delay=60)
 
     try:
-        log.info("[*] MQTT client_id=%s (set MQTT_CLIENT_ID untuk nilai tetap)", MQTT_CLIENT_ID)
+        log.info("MQTT client_id=%s", MQTT_CLIENT_ID)
+        log.info("VERIFY_SIGNATURE=%s", VERIFY_SIGNATURE)
         mqttc.connect(MQTT_HOST, MQTT_PORT, keepalive=MQTT_KEEPALIVE)
         mqttc.loop_forever()
     except KeyboardInterrupt:
-        log.info("[*] Berhenti.")
+        log.info("Stopped by user.")
     finally:
         mqttc.disconnect()
         influx.close()

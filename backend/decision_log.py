@@ -1,56 +1,41 @@
-"""Append thesis-oriented decision rows to CSV (Bab 4 analysis)."""
+"""Persist AI/rule-engine decisions to PostgreSQL (replaces CSV)."""
 
 from __future__ import annotations
 
-import csv
-from datetime import datetime, timezone
-from pathlib import Path
+import logging
 
-from config import DECISION_LOG_CSV, LOGS_DIR
+from sqlalchemy.orm import Session
 
+from models import DecisionLog
 
-def ensure_log_header(path: Path) -> None:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.stat().st_size > 0:
-        return
-    with path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(
-            [
-                "timestamp_iso",
-                "suhu",
-                "ph",
-                "tds",
-                "predicted_ph",
-                "predicted_tds",
-                "reason",
-                "status",
-            ]
-        )
+log = logging.getLogger("tilapia_api")
 
 
 def append_decision(
+    db: Session,
     *,
     suhu: float | None,
     ph: float | None,
     tds: float | None,
     predicted_ph: float | None,
     predicted_tds: float | None,
+    predicted_suhu: float | None,
+    water_quality: str | None,
+    ai_status: str | None,
     reason: str,
-    status: str,
+    recommendation: str | None = None,
 ) -> None:
-    ensure_log_header(DECISION_LOG_CSV)
-    ts = datetime.now(timezone.utc).isoformat()
-    with DECISION_LOG_CSV.open("a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow(
-            [
-                ts,
-                suhu,
-                ph,
-                tds,
-                predicted_ph,
-                predicted_tds,
-                reason,
-                status,
-            ]
-        )
+    row = DecisionLog(
+        suhu=suhu,
+        ph=ph,
+        tds=tds,
+        predicted_ph=predicted_ph,
+        predicted_tds=predicted_tds,
+        predicted_suhu=predicted_suhu,
+        water_quality=water_quality,
+        ai_status=ai_status,
+        reason=reason,
+        recommendation=recommendation,
+    )
+    db.add(row)
+    db.commit()

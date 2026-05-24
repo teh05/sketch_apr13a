@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB-Tilapia
+    uid: influxdb-tilapia
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    isDefault: true
+    jsonData:
+      version: Flux
+      organization: S2_Project
+      defaultBucket: tilapia_monitoring
+      tlsSkipVerify: true
+    secureJsonData:
+      token: $__env{INFLUX_TOKEN}

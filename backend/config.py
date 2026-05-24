@@ -14,6 +14,11 @@ INFLUX_ORG = os.environ.get("INFLUX_ORG", "S2_Project")
 INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "tilapia_monitoring")
 INFLUX_MEASUREMENT = os.environ.get("INFLUX_MEASUREMENT", "tilapia")
 
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://tilapia:tilapia_s2_secure@127.0.0.1:5432/tilapia_analytics",
+)
+
 CORS_ORIGINS = os.environ.get(
     "CORS_ORIGINS",
     "http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081",

@@ -1,5 +1,7 @@
 # Arsitektur sistem — Tilapia IoT
 
+> **Dokumentasi lengkap** (ERD, AI, flowchart, Docker, kredensial): lihat **[DOCUMENTATION.md](DOCUMENTATION.md)**
+
 Dokumen ini menjelaskan **alur data** dan **komponen** proyek agar mudah dipahami di GitHub. Diagram memakai [Mermaid](https://mermaid.js.org/); GitHub merender Mermaid secara native di file `.md`.
 
 ---

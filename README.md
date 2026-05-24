@@ -1,6 +1,8 @@
 # SMART WATER CHANGE ALERT SYSTEM — Tilapia IoT
 
-Monitoring kualitas air (ESP32 → MQTT → InfluxDB) dengan **API FastAPI**, **dashboard React**, dan **Grafana**.
+Monitoring kualitas air (ESP32 → MQTT → InfluxDB) dengan **API FastAPI**, **dashboard React**, **PostgreSQL analytics**, dan **Grafana**.
+
+> **Dokumentasi lengkap end-to-end** (ERD, arsitektur, AI/prediksi, flowchart, Docker, kredensial): **[DOCUMENTATION.md](DOCUMENTATION.md)**
 
 ## Arsitektur (visual)
 
@@ -41,7 +43,8 @@ flowchart TB
 
 | Komponen | Port host (default) | Keterangan |
 |----------|---------------------|------------|
-| InfluxDB | 8086 | Database time-series |
+| InfluxDB | 8086 | Time-series sensor (raw) |
+| PostgreSQL | 5432 | Analytics: notif, events, decision log |
 | Grafana | 3000 | Visualisasi analitis |
 | Backend API | 8000 | `/api/latest`, `/api/history`, `/api/health` |
 | Dashboard web | 8081 | Frontend (nginx, Docker) |
@@ -111,7 +114,7 @@ Lihat [SETUP_STACK.md](SETUP_STACK.md) untuk broker dan token.
 
 ## Log keputusan (Bab 4 / analisis)
 
-Backend menulis **`backend/logs/decision_logs.csv`** saat status **Danger** atau prediksi **WARNING_CHANGE_WATER**. File CSV tidak di-commit (lihat `.gitignore`).
+Backend menulis ke **`decision_logs`** di PostgreSQL (dan opsional CSV di `backend/logs/`) saat status **Danger/Critical** atau prediksi **WARNING_CHANGE_WATER**.
 
 ## Uji backend
 
