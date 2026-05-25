@@ -1,73 +1,111 @@
-# React + TypeScript + Vite
+# Frontend — Tilapia IoT Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Dashboard web **Smart Water Change Alert System** dibangun dengan **React 19**, **TypeScript**, **Vite 8**, **Tailwind CSS 4**, dan **Recharts**.
 
-Currently, two official plugins are available:
+> Dokumentasi lengkap: **[../DOCUMENTATION.md](../DOCUMENTATION.md)** · Arsitektur: **[../ARCHITECTURE.md](../ARCHITECTURE.md)**
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+---
 
-## React Compiler
+## Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Teknologi | Versi | Peran |
+|-----------|-------|-------|
+| React | 19 | UI framework |
+| TypeScript | 6.x | Type safety |
+| Vite | 8 | Dev server & build |
+| Tailwind CSS | 4 | Styling (soft dark theme) |
+| Recharts | 3.x | Grafik time-series |
+| Lucide React | — | Icons (NotifBell, dll.) |
+| nginx | Alpine | Production static server (Docker) |
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Struktur komponen
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+frontend/src/
+├── App.tsx                 # Root — polling, layout
+├── api.ts                  # Fetch helpers ke FastAPI
+├── index.css               # Theme & global styles
+└── components/
+    ├── StatusPanel.tsx     # Status 4-level (Normal/Warning/Danger/Critical)
+    ├── MetricCard.tsx      # Kartu suhu, pH, TDS + zone badge
+    ├── SensorChart.tsx     # Line chart 24h + reference band
+    ├── RecommendationBox.tsx # Prediksi 15 min + rekomendasi HRBAI
+    ├── EventTimeline.tsx   # Riwayat perubahan status (PostgreSQL)
+    └── NotifBell.tsx       # Bell + dropdown notifikasi
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+---
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## API yang dipanggil
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Base URL dari `VITE_API_BASE_URL` (default `http://localhost:8000`).
+
+| Endpoint | Interval | Fungsi |
+|----------|----------|--------|
+| `GET /api/latest` | 30 detik | Snapshot sensor + prediksi + status |
+| `GET /api/history` | 30 detik | Data 24 jam untuk grafik |
+| `GET /api/notifications` | 30 detik | Daftar alert |
+| `GET /api/events` | 30 detik | Timeline status |
+| `GET /api/thresholds` | Saat mount | Batas ideal untuk reference band chart |
+| `PATCH /api/notifications/{id}/read` | On click | Tandai notifikasi dibaca |
+
+---
+
+## Menjalankan (development)
+
+```powershell
+cd frontend
+npm install
+copy .env.example .env
+npm run dev
 ```
+
+Buka http://localhost:5173 — pastikan backend FastAPI jalan di port 8000.
+
+---
+
+## Build production (Docker)
+
+Frontend di-build ke image Docker dan disajikan via nginx di port **8081**:
+
+```powershell
+# Dari root proyek
+docker compose up --build -d
+```
+
+Akses: http://localhost:8081
+
+Build arg `VITE_API_BASE_URL` di-set di [`docker-compose.yml`](../docker-compose.yml).
+
+---
+
+## Environment
+
+Salin [`frontend/.env.example`](.env.example):
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+> **Penting:** variabel `VITE_*` ter-bake saat build. Jangan masukkan token InfluxDB atau secret ke frontend.
+
+---
+
+## Notifikasi browser
+
+Dashboard meminta izin `Notification` API saat pertama kali dimuat. Alert muncul saat `action_required = true` atau status Danger/Critical dari `/api/latest`.
+
+---
+
+## Lint & build
+
+```powershell
+npm run lint
+npm run build
+```
+
+---
+
+_Group 1 — S2 / IoT Tilapia_

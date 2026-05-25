@@ -1,78 +1,235 @@
-# InfluxDB, Grafana, dan bridge MQTT (`bridge_s2.py`)
+# Setup stack — InfluxDB, PostgreSQL, Grafana, bridge MQTT
 
-## 1. Jalankan Docker
+Panduan menjalankan seluruh infrastruktur proyek **Smart Water Change Alert System — Tilapia IoT**.
 
-Di folder proyek ini:
+> Dokumentasi lengkap: **[DOCUMENTATION.md](DOCUMENTATION.md)** · Arsitektur: **[ARCHITECTURE.md](ARCHITECTURE.md)**
 
-```bash
-docker compose up -d
+---
+
+## 1. Prasyarat
+
+| Prasyarat | Keterangan |
+|-----------|------------|
+| Docker Desktop | Menjalankan 5 container |
+| Python 3.12+ | `bridge_s2.py` dan pytest |
+| Node.js 22+ | Dev frontend (opsional) |
+| MQTT Broker | Aktif di LAN (mis. Mosquitto di `192.168.43.130:1883`) |
+| ESP32 | Firmware `sketch_apr13a.ino` ter-upload |
+
+---
+
+## 2. Jalankan Docker Compose
+
+Di folder root proyek:
+
+```powershell
+docker compose up --build -d
 ```
 
-Cek: `docker ps` — container `influxdb_s2` dan `grafana_s2` harus **Up**.
+Cek status:
 
-## 2. Token API InfluxDB
+```powershell
+docker ps
+```
 
-1. Buka [http://localhost:8086](http://localhost:8086).
-2. Login dengan user/password dari [docker-compose.yml](docker-compose.yml) (`admin_tilapia` / `password_s2_tilapia`).
-3. **Load Data** → **API Tokens** → **Generate API Token** → **All Access Token**, nama misalnya `PythonBridge`.
-4. Salin token (hanya ditampilkan sekali).
+Container yang harus **Up**:
 
-## 3. Variabel lingkungan untuk bridge
+| Container | Port | Layanan |
+|-----------|------|---------|
+| `influxdb_s2` | 8086 | InfluxDB v2 |
+| `tilapia_postgres` | 5432 | PostgreSQL 16 |
+| `tilapia_backend` | 8000 | FastAPI |
+| `tilapia_frontend` | 8081 | React + nginx |
+| `grafana_s2` | 3000 | Grafana |
 
-**Cara disarankan:** buat file **`.env`** di folder proyek (tidak di-commit; ada di `.gitignore`). Salin dari [`.env.example`](.env.example), lalu isi `INFLUX_TOKEN`. `bridge_s2.py` memuat `.env` otomatis lewat `python-dotenv`.
+---
 
-Wajib:
+## 3. Token API InfluxDB
 
-- `INFLUX_TOKEN` — token dari langkah 2.
+InfluxDB di-init otomatis oleh `docker-compose.yml`:
 
-Opsional (default sudah cocok dengan compose + firmware):
+| Field | Nilai default |
+|-------|---------------|
+| Username | `admin_tilapia` |
+| Password | `password_s2_tilapia` |
+| Organization | `S2_Project` |
+| Bucket | `tilapia_monitoring` |
+
+**Generate token API:**
+
+1. Buka http://localhost:8086
+2. Login dengan kredensial di atas
+3. **Load Data** → **API Tokens** → **Generate API Token** → **All Access Token**
+4. Salin token (hanya ditampilkan sekali)
+
+---
+
+## 4. Variabel lingkungan
+
+### Root `.env` (untuk `bridge_s2.py`)
+
+Salin dari [`.env.example`](.env.example):
+
+```env
+INFLUX_URL=http://127.0.0.1:8086
+INFLUX_TOKEN=<token-dari-langkah-3>
+INFLUX_ORG=S2_Project
+INFLUX_BUCKET=tilapia_monitoring
+INFLUX_MEASUREMENT=tilapia
+
+MQTT_HOST=192.168.43.130
+MQTT_PORT=1883
+MQTT_TOPIC=s2/water/monitoring
+
+PAYLOAD_SECRET=tilapia_iot_s2_key
+VERIFY_SIGNATURE=false
+```
 
 | Variabel | Default | Keterangan |
 |----------|---------|------------|
-| `INFLUX_URL` | `http://127.0.0.1:8086` | Bridge jalan di **host**; gunakan localhost, bukan nama container. |
-| `INFLUX_ORG` | `S2_Project` | |
-| `INFLUX_BUCKET` | `tilapia_monitoring` | |
-| `INFLUX_MEASUREMENT` | `tilapia` | Nama measurement di Influx. |
-| `MQTT_HOST` | `192.168.43.130` | Broker MQTT (sama dengan ESP32). |
-| `MQTT_PORT` | `1883` | |
-| `MQTT_TOPIC` | `s2/water/monitoring` | |
+| `INFLUX_URL` | `http://127.0.0.1:8086` | Bridge di **host** — pakai localhost |
+| `MQTT_HOST` | `192.168.43.130` | IP broker MQTT (sesuaikan jaringan) |
+| `VERIFY_SIGNATURE` | `false` | Set `true` untuk tolak payload tanpa/tidak valid SHA256 |
 
-Setelah `.env` berisi token, cukup:
+### `backend/.env` (untuk FastAPI + Docker backend)
 
-```powershell
-python bridge_s2.py
+Salin dari [`backend/.env.example`](backend/.env.example):
+
+```env
+INFLUX_URL=http://127.0.0.1:8086
+INFLUX_TOKEN=<token-sama-dengan-root>
+INFLUX_ORG=S2_Project
+INFLUX_BUCKET=tilapia_monitoring
+
+DATABASE_URL=postgresql://tilapia:tilapia_s2_secure@127.0.0.1:5432/tilapia_analytics
+CORS_ORIGINS=http://localhost:5173,http://localhost:8081,http://127.0.0.1:5173,http://127.0.0.1:8081
 ```
 
-**Alternatif** — set variabel di PowerShell (mengoverride `.env` untuk sesi itu):
+> Di dalam Docker, `DATABASE_URL` di-override oleh `docker-compose.yml` ke hostname `postgres`.
 
-```powershell
-$env:INFLUX_TOKEN = "paste-token-di-sini"
-python bridge_s2.py
+### `frontend/.env`
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
 ```
 
-## 4. Dependensi Python
+---
 
-```bash
+## 5. Dependensi Python & bridge MQTT
+
+```powershell
 pip install -r requirements.txt
+python bridge_s2.py
 ```
 
-## 5. Grafana — data source InfluxDB
+Log sukses:
 
-1. Buka [http://localhost:3000](http://localhost:3000) (default `admin` / `admin`).
-2. **Connections** → **Add data source** → **InfluxDB**.
-3. **Query language:** Flux.
-4. **URL:** `http://influxdb:8086` — ini hostname **service** Docker (bukan `localhost`), karena Grafana berjalan **di dalam** jaringan compose.
-5. Isi **Organization**, **Token**, **Default Bucket** sama seperti di atas.
+```
+[*] Masuk: {'suhu': 29.8, 'ph': 6.73, 'tds': 58, ...}
+[OK] Berhasil disimpan → bucket=tilapia_monitoring
+```
 
-Bridge di host tetap memakai `http://127.0.0.1:8086`; hanya Grafana di container yang memakai `http://influxdb:8086`.
+**Catatan jaringan:** bridge di host memakai `http://127.0.0.1:8086`; Grafana di container memakai `http://influxdb:8086`.
 
-## 6. Verifikasi
+---
 
-- Log bridge: baris `[*] Masuk: ...` dan `[OK] Berhasil disimpan ...`.
-- Log InfluxDB: `docker logs -f influxdb_s2`.
-- Di Grafana, buat dashboard **Time series** dengan query Flux ke bucket `tilapia_monitoring`.
+## 6. Grafana
+
+Grafana di-provision otomatis dari folder [`grafana/provisioning/`](grafana/provisioning/) dan dashboard [`grafana/dashboards/tilapia-water-quality.json`](grafana/dashboards/tilapia-water-quality.json).
+
+| Field | Nilai |
+|-------|-------|
+| URL | http://localhost:3000 |
+| Username | `admin` |
+| Password | `tilapia_grafana_s2` |
+
+Datasource InfluxDB (Flux) dan dashboard **Tilapia Water Quality** seharusnya sudah tersedia setelah container healthy.
+
+**Jika datasource kosong (manual fallback):**
+
+1. **Connections** → **Add data source** → **InfluxDB**
+2. Query language: **Flux**
+3. URL: `http://influxdb:8086` (hostname Docker, bukan localhost)
+4. Organization: `S2_Project`, Token: sama dengan `.env`, Bucket: `tilapia_monitoring`
+
+---
+
+## 7. PostgreSQL
+
+| Field | Nilai |
+|-------|-------|
+| Host | `localhost:5432` |
+| Username | `tilapia` |
+| Password | `tilapia_s2_secure` |
+| Database | `tilapia_analytics` |
+
+Cek tabel:
+
+```powershell
+docker exec tilapia_postgres psql -U tilapia -d tilapia_analytics -c "\dt"
+```
+
+Tabel: `notifications`, `water_quality_events`, `decision_logs`, `sensor_summaries`, `adaptive_baselines`.
+
+---
+
+## 8. ESP32 & MQTT
+
+Pastikan firmware [`sketch_apr13a.ino`](sketch_apr13a.ino) memakai IP broker yang sama dengan `MQTT_HOST` di `.env`:
+
+| Field firmware | Default |
+|----------------|---------|
+| MQTT Server | `192.168.43.130` |
+| MQTT Port | `1883` |
+| Topic | `s2/water/monitoring` |
+
+---
+
+## 9. Verifikasi end-to-end
+
+```powershell
+# Health API
+Invoke-RestMethod http://127.0.0.1:8000/api/health
+
+# Data terbaru + prediksi HRBAI
+Invoke-RestMethod http://127.0.0.1:8000/api/latest
+
+# Notifikasi di PostgreSQL
+docker exec tilapia_postgres psql -U tilapia -d tilapia_analytics -c "SELECT COUNT(*) FROM notifications;"
+
+# Unit test backend
+cd backend
+python -m pytest tests/ -v
+```
+
+| # | Skenario | Bukti |
+|---|----------|-------|
+| 1 | ESP32 publish MQTT | Serial log `[MQTT] Sent: {...}` |
+| 2 | Bridge → InfluxDB | Log `Written to InfluxDB` |
+| 3 | Backend baca Influx | `/api/latest` return suhu/ph/tds |
+| 4 | AI prediksi | Field `predicted_ph`, `confidence` di response |
+| 5 | PostgreSQL notif | Tabel `notifications` terisi |
+| 6 | Dashboard chart | 3 SensorChart di http://localhost:8081 |
+| 7 | Grafana panel | Dashboard Tilapia Water Quality |
+
+---
+
+## 10. Menghentikan stack
+
+```powershell
+docker compose down
+```
+
+Volume data (`influxdb_data`, `postgres_data`, `grafana_data`) tetap tersimpan. Tambahkan `-v` jika ingin hapus data.
+
+---
 
 ## Prasyarat jaringan
 
-- Broker MQTT harus aktif di alamat yang dipakai ESP32 (mis. `192.168.43.130`).
-- PC yang menjalankan Docker + `bridge_s2.py` harus bisa mencapai broker tersebut (subnet/firewall).
+- Broker MQTT harus aktif di alamat yang dipakai ESP32 dan `bridge_s2.py`
+- PC yang menjalankan Docker + bridge harus bisa reach broker (subnet/firewall)
+- ESP32 dan PC harus pada jaringan WiFi LAN yang sama
+
+---
+
+_Group 1 — S2 / IoT Tilapia_

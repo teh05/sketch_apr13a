@@ -1,133 +1,173 @@
 # SMART WATER CHANGE ALERT SYSTEM — Tilapia IoT
 
-Monitoring kualitas air (ESP32 → MQTT → InfluxDB) dengan **API FastAPI**, **dashboard React**, **PostgreSQL analytics**, dan **Grafana**.
+Monitoring kualitas air kolam ikan nila (*Oreochromis niloticus*) dengan **ESP32 edge node**, **MQTT event-driven**, **InfluxDB + PostgreSQL dual database**, **FastAPI + HRBAI**, **dashboard React**, dan **Grafana**.
 
-> **Dokumentasi lengkap end-to-end** (ERD, arsitektur, AI/prediksi, flowchart, Docker, kredensial): **[DOCUMENTATION.md](DOCUMENTATION.md)**
+> **Dokumentasi lengkap end-to-end** (ERD, arsitektur, AI/prediktif, flowchart, Docker, kredensial, pengujian): **[DOCUMENTATION.md](DOCUMENTATION.md)**
 
 ## Arsitektur (visual)
 
-Diagram berikut **otomatis tampil di GitHub** (Mermaid). Untuk penjelasan lebih detail, port, dan diagram permintaan API, lihat **[ARCHITECTURE.md](ARCHITECTURE.md)**. **Pseudocode** alur logika (ESP32, bridge, API, AI placeholder, frontend): **[PSEUDOCODE.md](PSEUDOCODE.md)**.
+Diagram berikut **otomatis tampil di GitHub** (Mermaid). Detail port, alur data, dan API: **[ARCHITECTURE.md](ARCHITECTURE.md)**. **Pseudocode** algoritma: **[PSEUDOCODE.md](PSEUDOCODE.md)**.
 
 ```mermaid
-flowchart TB
-  subgraph sense [Lapangan]
-    ESP32["ESP32\nfirmware"]
+flowchart LR
+  subgraph EDGE["Edge / Lapangan"]
+    ESP32["ESP32\nsketch_apr13a.ino"]
+    SENS["DS18B20 | pH 4502C | TDS"]
+    OLED["OLED | LED | Buzzer"]
+    SENS --> ESP32 --> OLED
   end
-  subgraph net [Jaringan]
-    MQTT["MQTT_broker"]
+
+  subgraph NET["Jaringan"]
+    MQTT["MQTT Broker\n:1883"]
   end
-  subgraph host [Host_opsional]
+
+  subgraph HOST["Host PC"]
     Bridge["bridge_s2.py"]
   end
-  subgraph docker [Docker_Compose]
-    Influx["InfluxDB"]
-    Grafana["Grafana"]
-    Backend["FastAPI_backend"]
-    Front["React_nginx"]
+
+  subgraph DOCKER["Docker Compose"]
+    Influx["InfluxDB v2\n:8086"]
+    PG["PostgreSQL 16\n:5432"]
+    Backend["FastAPI + HRBAI\n:8000"]
+    Front["React + nginx\n:8081"]
+    Grafana["Grafana\n:3000"]
   end
-  subgraph user [Pengguna]
+
+  subgraph USER["Pengguna"]
     Browser["Browser"]
   end
 
-  ESP32 -->|"publish_JSON"| MQTT
+  ESP32 -->|"JSON + SHA256 sig"| MQTT
   MQTT --> Bridge
   Bridge -->|"write"| Influx
-  Backend -->|"Flux_read"| Influx
-  Grafana -->|"Flux_read"| Influx
+  Backend -->|"Flux"| Influx
+  Backend -->|"SQLAlchemy"| PG
+  Grafana -->|"Flux"| Influx
   Browser --> Front
   Browser --> Grafana
   Front -->|"REST"| Backend
 ```
 
+## Fitur utama
+
+| Fitur | Implementasi |
+|-------|----------------|
+| Monitoring real-time | ESP32 + OLED + MQTT (interval 5 detik) |
+| Time-series storage | InfluxDB v2, bucket `tilapia_monitoring` |
+| Analytics & alert | PostgreSQL — notifikasi, events, decision log |
+| Adaptive intelligence | HRBAI — baseline adaptif, forecast 15 min, z-score anomaly |
+| Notifikasi | PostgreSQL + NotifBell UI + browser notification |
+| Visualisasi | React dashboard (3 chart) + Grafana provisioning |
+| Edge optimization | Filter delta sebelum publish MQTT |
+| Keamanan IoT | SHA256 payload signature, audit WiFi WPA2 |
+| Orkestrasi | Docker Compose (5 services) |
+
 ## Arsitektur singkat
 
-| Komponen | Port host (default) | Keterangan |
-|----------|---------------------|------------|
+| Komponen | Port host | Keterangan |
+|----------|-----------|------------|
 | InfluxDB | 8086 | Time-series sensor (raw) |
 | PostgreSQL | 5432 | Analytics: notif, events, decision log |
-| Grafana | 3000 | Visualisasi analitis |
-| Backend API | 8000 | `/api/latest`, `/api/history`, `/api/health` |
-| Dashboard web | 8081 | Frontend (nginx, Docker) |
+| Grafana | 3000 | Visualisasi analitis (Flux, auto-provisioned) |
+| Backend API | 8000 | REST + HRBAI — lihat `/docs` |
+| Dashboard web | 8081 | Frontend React (nginx, Docker) |
 | Vite dev | 5173 | Hanya mode pengembangan |
+| MQTT bridge | — | `bridge_s2.py` di **host** (bukan Docker) |
 
 ## Prasyarat & file environment
 
 | File | Kegunaan |
 |------|----------|
-| **`.env`** (root) | `bridge_s2.py` — MQTT + Influx (bisa sama isi token dengan backend). |
-| **`backend/.env`** | FastAPI + `docker compose` service **backend** — **`INFLUX_TOKEN`** dan org/bucket. Salin dari root atau dari [backend/.env.example](backend/.env.example). |
-| **`frontend/.env`** | Hanya **`VITE_API_BASE_URL`** (alamat API), **bukan** token Influx. Salin dari [frontend/.env.example](frontend/.env.example). |
+| **`.env`** (root) | `bridge_s2.py` — MQTT, Influx, `PAYLOAD_SECRET`, `VERIFY_SIGNATURE` |
+| **`backend/.env`** | FastAPI + Docker service **backend** — `INFLUX_TOKEN`, `DATABASE_URL` |
+| **`frontend/.env`** | Hanya **`VITE_API_BASE_URL`** — bukan token Influx |
 
-Minimal untuk backend:
+Salin dari [`.env.example`](.env.example), [`backend/.env.example`](backend/.env.example), [`frontend/.env.example`](frontend/.env.example).
 
-```env
-INFLUX_TOKEN=...   # token API InfluxDB (sama untuk bridge & backend jika satu sumber)
-```
-
-Setelah token diganti, perbarui **root `.env`** dan **`backend/.env`** agar konsisten (atau satu sumber: salin lagi dari root ke `backend/.env`).
-
-## Menjalankan seluruh stack (produksi lokal)
+## Menjalankan seluruh stack
 
 Dari root proyek:
 
-```bash
-docker compose up --build
+```powershell
+docker compose up --build -d
+pip install -r requirements.txt
+python bridge_s2.py
 ```
 
-- API: http://127.0.0.1:8000/docs  
-- Dashboard: http://127.0.0.1:8081  
-- Grafana: http://127.0.0.1:3000  
-- Influx UI: http://127.0.0.1:8086  
+| Layanan | URL |
+|---------|-----|
+| Dashboard React | http://127.0.0.1:8081 |
+| API Docs (Swagger) | http://127.0.0.1:8000/docs |
+| Grafana | http://127.0.0.1:3000 |
+| InfluxDB UI | http://127.0.0.1:8086 |
 
-Backend memakai `INFLUX_URL=http://influxdb:8086` di dalam jaringan Docker; token/org/bucket dibaca dari **`backend/.env`** (lihat `env_file` di `docker-compose.yml`).
+Detail setup token, Grafana, dan verifikasi: **[SETUP_STACK.md](SETUP_STACK.md)**.
 
 ## Pengembangan (tanpa Docker untuk FE/BE)
 
 **Backend:**
 
-```bash
+```powershell
 cd backend
 pip install -r requirements.txt
-# Pastikan backend/.env ada (INFLUX_URL=http://127.0.0.1:8086 untuk Influx lokal)
+# backend/.env: INFLUX_URL=http://127.0.0.1:8086, DATABASE_URL=...
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Frontend:**
 
-```bash
+```powershell
 cd frontend
 npm install
-copy .env.example .env   # atau set VITE_API_BASE_URL=http://127.0.0.1:8000
+copy .env.example .env
 npm run dev
 ```
 
-## MQTT bridge (ESP32 → Influx)
+## API endpoints (ringkas)
 
-Jalankan di host (bukan wajib di Docker):
+| Endpoint | Sumber | Deskripsi |
+|----------|--------|-----------|
+| `GET /api/health` | — | Health check |
+| `GET /api/latest` | InfluxDB + AI + PG | Snapshot + prediksi + notifikasi |
+| `GET /api/history` | InfluxDB | Time-series 24 jam |
+| `GET /api/notifications` | PostgreSQL | Daftar alert |
+| `GET /api/events` | PostgreSQL | Timeline perubahan status |
+| `GET /api/decisions` | PostgreSQL | Log keputusan AI |
+| `GET /api/thresholds` | `thresholds.py` | Batas biologis nila |
 
-```bash
-pip install -r requirements.txt
-python bridge_s2.py
-```
+Daftar lengkap: [DOCUMENTATION.md §8](DOCUMENTATION.md#8-backend-api) atau http://127.0.0.1:8000/docs
 
-Lihat [SETUP_STACK.md](SETUP_STACK.md) untuk broker dan token.
+## Log keputusan & notifikasi
 
-## Log keputusan (Bab 4 / analisis)
-
-Backend menulis ke **`decision_logs`** di PostgreSQL (dan opsional CSV di `backend/logs/`) saat status **Danger/Critical** atau prediksi **WARNING_CHANGE_WATER**.
+Backend menulis ke **PostgreSQL** (`decision_logs`, `notifications`, `water_quality_events`) saat status **Danger/Critical** atau prediksi **WARNING_CHANGE_WATER**. CSV opsional di `backend/logs/`.
 
 ## Uji backend
 
-```bash
+```powershell
 cd backend
-pip install -r requirements.txt
 python -m pytest tests/ -v
+```
+
+## Struktur proyek
+
+```
+sketch_apr13a/
+├── sketch_apr13a.ino      # Firmware ESP32
+├── bridge_s2.py           # MQTT → InfluxDB bridge
+├── docker-compose.yml     # 5 services
+├── backend/               # FastAPI + HRBAI + PostgreSQL
+├── frontend/              # React dashboard
+├── grafana/               # Provisioning datasource + dashboard
+├── DOCUMENTATION.md       # Dokumentasi master
+├── ARCHITECTURE.md        # Diagram arsitektur
+├── PSEUDOCODE.md          # Pseudocode algoritma
+└── SETUP_STACK.md         # Setup Influx, Grafana, bridge
 ```
 
 ## Notifikasi browser
 
-Dashboard meminta izin **Notification** di browser. Di HTTPS/production, kebijakan origin bisa berbeda; di `localhost` biasanya berjalan.
+Dashboard meminta izin **Notification** di browser. Di `localhost` biasanya berjalan; di production HTTPS kebijakan origin bisa berbeda.
 
 ---
 
-Group 1 — S2 / IoT Tilapia
+**Group 1 — S2 / IoT Tilapia**

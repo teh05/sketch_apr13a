@@ -1,8 +1,10 @@
 # Pseudocode — Tilapia IoT Monitoring
 
-Dokumen ini merangkum **logika algoritmik** proyek dalam bahasa pseudocode agar mudah dibaca di GitHub (tesis, README, atau lampiran). Bukan salinan baris-per-baris kode sumber.
+Dokumen ini merangkum **logika algoritmik** proyek dalam bahasa pseudocode agar mudah dibaca di GitHub (laporan, README, atau lampiran). Bukan salinan baris-per-baris kode sumber.
 
-**File terkait:** [`sketch_apr13a.ino`](sketch_apr13a.ino), [`bridge_s2.py`](bridge_s2.py), [`backend/main.py`](backend/main.py), [`backend/ai_engine.py`](backend/ai_engine.py), [`frontend/src/App.tsx`](frontend/src/App.tsx).
+> Dokumentasi lengkap: **[DOCUMENTATION.md](DOCUMENTATION.md)** · Arsitektur: **[ARCHITECTURE.md](ARCHITECTURE.md)**
+
+**File terkait:** [`sketch_apr13a.ino`](sketch_apr13a.ino), [`bridge_s2.py`](bridge_s2.py), [`backend/main.py`](backend/main.py), [`backend/ai_engine.py`](backend/ai_engine.py), [`backend/thresholds.py`](backend/thresholds.py), [`backend/notification_service.py`](backend/notification_service.py), [`frontend/src/App.tsx`](frontend/src/App.tsx).
 
 ---
 
@@ -10,32 +12,60 @@ Dokumen ini merangkum **logika algoritmik** proyek dalam bahasa pseudocode agar 
 
 ```
 PROSEDUR setup():
-    inisialisasi Serial, OLED, WiFi
-    hubungkan ke WiFi (ssid, password)
+    inisialisasi Serial, ADC 12-bit
+    inisialisasi pin Buzzer, LED Safe, LED Danger
+    inisialisasi OLED SSD1306 (I2C 0x3C)
+    hubungkan WiFi (ssid, password)
+    audit keamanan WiFi (WPA2)
     atur server MQTT (alamat, port)
-    mulai sensor suhu (OneWire / Dallas)
+    mulai sensor suhu DS18B20 (OneWire GPIO4)
 
 PROSEDUR loop() — berulang terus:
     JIKA WiFi terhubung MAKA
-        JIKA belum terhubung ke broker MQTT MAKA
-            reconnect MQTT dengan client_id acak
-        akhir JIKA
-        jalankan client.loop() untuk menjaga sesi MQTT
+        JIKA belum terhubung ke broker MQTT MAKA reconnect MQTT
+        jalankan client.loop()
     akhir JIKA
 
-    JIKA selisih waktu sekarang dengan kirim_terakhir > 5000 ms MAKA
-        tandai kirim_terakhir = sekarang
+    JIKA selisih waktu < 5000 ms MAKA KELUAR  // interval 5 detik
+    tandai waktu_kirim = sekarang
 
-        baca suhu dari sensor Dallas
-        baca TDS dari ADC → voltase → konversi ke ppm (polinomial)
-        baca pH dari ADC (rata-rata 10 sampel) → voltase → kalibrasi ke skala pH
+  // --- BACA SENSOR ---
+    baca suhu dari DS18B20
+    baca TDS dari ADC GPIO35 → voltase → polinomial ppm
+    baca pH dari ADC GPIO34 (rata-rata 20 sampel) → voltase
+    pH ← (PH_SLOPE × voltase) + PH_INTERCEPT   // kalibrasi 2 titik
 
-        tampilkan suhu, pH, TDS pada OLED
+  // --- KLASIFIKASI & AKTUATOR ---
+    status ← classifyStatus(suhu, pH, TDS)   // Ideal/Warning/Danger/Critical
+    isDanger ← (status = Danger ATAU status = Critical)
 
-        JIKA MQTT terhubung MAKA
-            bentuk string JSON: {"suhu", "ph", "tds"}
-            publish(JSON) ke topik "s2/water/monitoring"
-        akhir JIKA
+    JIKA isDanger MAKA
+        LED Safe ← OFF; LED Danger ← ON; buzzer ← ON (updateBuzzer)
+    JIKA TIDAK MAKA
+        LED Safe ← ON; LED Danger ← OFF; buzzer ← OFF
+    akhir JIKA
+
+    tampilkan suhu, pH, TDS, status pada OLED
+    JIKA isDanger MAKA tampilkan "!! GANTI AIR !!" pada OLED
+
+  // --- EDGE FILTER ---
+    JIKA TIDAK significantChange(suhu, pH, TDS) MAKA
+        log "No significant change, skipping MQTT"
+        KELUAR
+    akhir JIKA
+    // delta: suhu ≥ 0.3°C, pH ≥ 0.05, TDS ≥ 5 ppm
+
+    perbarui lastSuhu, lastPH, lastTDS
+
+  // --- PAYLOAD + SHA256 ---
+    payload ← JSON {suhu, ph, tds, status, device}
+    sigInput ← suhu + "|" + ph + "|" + tds + "|" + PAYLOAD_SECRET
+    sig ← SHA256_hex(sigInput)
+    fullPayload ← payload + field "sig"
+
+  // --- PUBLISH MQTT ---
+    JIKA MQTT terhubung MAKA
+        publish(fullPayload) ke topik "s2/water/monitoring"
     akhir JIKA
 ```
 
@@ -45,42 +75,39 @@ PROSEDUR loop() — berulang terus:
 
 ```
 PROSEDUR main():
-    muat variabel dari file .env (INFLUX_*, MQTT_*)
-    JIKA INFLUX_TOKEN kosong MAKA
-        cetak error dan keluar
+    muat variabel dari .env (INFLUX_*, MQTT_*, PAYLOAD_SECRET, VERIFY_SIGNATURE)
+    JIKA INFLUX_TOKEN kosong MAKA cetak error; KELUAR
     akhir JIKA
 
     buka klien InfluxDB + write_api (sinkron)
 
     DEFINISIKAN on_connect(klien_mqtt):
-        JIKA koneksi sukses MAKA
-            subscribe ke topik MQTT_TOPIC
-        akhir JIKA
+        JIKA koneksi sukses MAKA subscribe ke MQTT_TOPIC
 
     DEFINISIKAN on_message(klien_mqtt, pesan):
-        raw ← decode payload pesan ke teks UTF-8
+        raw ← decode payload ke UTF-8
         COBA:
-            fields ← parse JSON: suhu, ph, tds (tds sebagai integer)
+            data ← parse JSON
+            validasi field: suhu, ph, tds
         TANGKAP error:
-            log error; KELUAR dari handler
-        log "Masuk" + fields
+            log error; KELUAR
+
+        JIKA VERIFY_SIGNATURE = true MAKA
+            verifikasi field "sig" dengan SHA256(suhu|ph|tds|secret)
+            JIKA gagal MAKA log "Invalid signature"; KELUAR
+        akhir JIKA
+
+        log "Masuk" + data
 
         COBA:
-            bentuk Point(measurement) dengan field suhu, ph, tds
+            bentuk Point(measurement=tilapia) dengan field suhu, ph, tds
             write_api.write(bucket, org, point)
             log sukses
         TANGKAP error:
             log gagal simpan Influx
 
-    DEFINISIKAN on_disconnect:
-        JIKA kode putus ≠ 0 MAKA log peringatan (opsional: rc=7 = koneksi hilang)
-
-    buat klien MQTT dengan client_id unik
-    set reconnect_delay (min, max)
     connect ke MQTT_HOST:MQTT_PORT
-    loop_forever() — blok sampai Ctrl+C
-
-    tutup MQTT dan Influx
+    loop_forever()
 ```
 
 ---
@@ -88,34 +115,38 @@ PROSEDUR main():
 ## 3. API FastAPI — snapshot terkini (`GET /api/latest`)
 
 ```
-FUNGSI api_latest():
-    JIKA klien Influx tidak dikonfigurasi MAKA
-        kembalikan HTTP 503
-    akhir JIKA
+FUNGSI api_latest(db: PostgreSQL session):
+    JIKA klien Influx tidak dikonfigurasi MAKA kembalikan HTTP 503
 
-    row ← query_latest(Influx) — satu baris terakhir (pivot suhu, ph, tds)
+    row ← query_latest(Influx) — titik terakhir (pivot suhu, ph, tds)
 
     JIKA row kosong MAKA
-        kembalikan JSON default: nilai null, status Normal, data_stale = true
+        kembalikan JSON: nilai null, data_stale = true
     akhir JIKA
 
     suhu, ph, tds ← ekstrak angka dari row
-    wq ← water_quality_status(suhu, ph, tds)   // aturan ambang saat ini
+    wq ← water_quality_status(suhu, ph, tds)   // 4 level, worst-case
 
     recent_rows ← query_recent_pivoted(limit = 60)
-    pred ← predict_status(recent_rows)         // placeholder AI / tren 15 menit
+    adaptive ← compute_adaptive_thresholds(recent_rows)
+    pred ← predict_status(recent_rows, adaptive)   // HRBAI
 
     rec ← recommendation(pred.ai_status, wq)
+    zones ← zone per parameter (suhu_zone, ph_zone, tds_zone)
 
-    action_required ← (wq = Danger) ATAU (pred.ai_status = WARNING_CHANGE_WATER)
+    action_required ← (wq ∈ {Danger, Critical})
+                     ATAU (pred.ai_status = WARNING_CHANGE_WATER)
 
-    JIKA Danger ATAU WARNING_CHANGE_WATER MAKA
-        append_decision ke CSV (timestamp, nilai, prediksi, alasan, status)
-        log INFO keputusan
+    // Side-effect PostgreSQL
+    notification_service.check_and_notify(db, wq, pred, suhu, ph, tds)
+    catat event jika status berubah (water_quality_events)
+    JIKA action_required MAKA
+        append_decision ke PostgreSQL decision_logs
     akhir JIKA
 
-    kembalikan JSON: waktu, suhu, ph, tds, wq, ai_status, prediksi, rec,
-                     action_required, data_stale = false
+    kembalikan JSON: time, suhu, ph, tds, zones, wq,
+                     ai_status, predicted_*, confidence, recommendation,
+                     action_required, anomalies, adaptive, data_stale = false
 ```
 
 ---
@@ -124,124 +155,173 @@ FUNGSI api_latest():
 
 ```
 FUNGSI api_history():
-    JIKA klien Influx tidak dikonfigurasi MAKA
-        kembalikan HTTP 503
-    akhir JIKA
+    JIKA klien Influx tidak dikonfigurasi MAKA kembalikan HTTP 503
 
     points ← query_history_24h(Influx) — deret {time, suhu, ph, tds}
-
     kembalikan JSON { "points": points, "count": panjang(points) }
 ```
 
 ---
 
-## 5. Mesin aturan & prediksi (`ai_engine.py`)
+## 5. Mesin HRBAI (`ai_engine.py`)
 
-### 5.1 Status kualitas air (nilai **sekarang**)
+### 5.1 Status kualitas air — 4 zona (`thresholds.py`)
 
 ```
 FUNGSI water_quality_status(suhu, ph, tds):
-    JIKA ph atau tds tidak ada MAKA kembalikan "Normal"
+    zone_ph   ← classify_zone(ph,   PH_THRESHOLDS)
+    zone_tds  ← classify_zone(tds,  TDS_THRESHOLDS)
+    zone_suhu ← classify_zone(suhu, SUHU_THRESHOLDS)
 
-    JIKA ph < 6.5 ATAU ph > 8.5 ATAU tds > 500 MAKA
-        kembalikan "Danger"
-    JIKA TIDAK JIKA tds > 400 ATAU ph di luar rentang aman mendekati batas MAKA
-        kembalikan "Warning"   // sesuai implementasi
-    JIKA TIDAK
-        kembalikan "Normal"
+    kembalikan worst_case(zone_ph, zone_tds, zone_suhu)
+    // ideal → Normal, warning → Warning, danger → Danger, critical → Critical
 ```
 
-### 5.2 Prediksi trajectory (placeholder; ganti dengan LSTM nanti)
+### 5.2 Adaptive baseline
 
 ```
-FUNGSI predict_status(rows_pivoted_dari_Influx):
+FUNGSI compute_adaptive_thresholds(rows):
+    UNTUK SETIAP parameter (ph, tds, suhu):
+        mean ← rata-rata values
+        std  ← standar deviasi sampel
+        adaptive_low  ← max(biological_ideal_low,  mean − 1.5 × std)
+        adaptive_high ← min(biological_ideal_high, mean + 1.5 × std)
+    kembalikan AdaptiveThresholds
+```
+
+### 5.3 Prediksi trajectory (linear forecast 15 menit)
+
+```
+FUNGSI predict_status(rows, adaptive):
     urutkan rows menaik menurut waktu
-    ekstrak deret waktu, ph, tds
+    JIKA titik data < 2 MAKA kembalikan ai_status = OK, alasan = insufficient_points
 
-    JIKA titik data < 2 MAKA
-        kembalikan ai_status = OK, alasan = insufficient_points
-    akhir JIKA
+    pred_ph   ← linear_forecast(waktu, ph,   horizon = 15 menit)
+    pred_tds  ← linear_forecast(waktu, tds,  horizon = 15 menit)
+    pred_suhu ← linear_forecast(waktu, suhu, horizon = 15 menit)
 
-    pred_ph ← linear_forecast(waktu, ph, horizon = 15 menit dalam detik)
-    pred_tds ← linear_forecast(waktu, tds, horizon yang sama)
+    anomalies ← deteksi z-score > 2.5 per parameter
+    confidence ← f(jumlah_titik, rentang_waktu)
 
-    cur_danger ← apakah (ph_terakhir, tds_terakhir) di zona bahaya
-    pred_danger ← apakah (pred_ph, pred_tds) di zona bahaya
+    cur_zone   ← water_quality_status(suhu_terakhir, ph_terakhir, tds_terakhir)
+    pred_zone  ← water_quality_status(pred_suhu, pred_ph, pred_tds)
 
-    JIKA BUKAN cur_danger DAN pred_danger MAKA
+    JIKA cur_zone aman DAN pred_zone ∈ {Danger, Critical} MAKA
         kembalikan WARNING_CHANGE_WATER + prediksi + alasan trajectory_to_danger
     JIKA TIDAK
         kembalikan OK + prediksi + alasan trajectory_ok
 ```
 
+### 5.4 Rekomendasi
+
 ```
 FUNGSI recommendation(ai_status, water_quality_status):
-    JIKA water_quality_status = "Danger" ATAU ai_status = WARNING_CHANGE_WATER MAKA
-        kembalikan teks "Change 30% of water now"
+    JIKA water_quality_status = Critical MAKA
+        kembalikan "EMERGENCY: ganti air segera"
+    JIKA wq = Danger ATAU ai_status = WARNING_CHANGE_WATER MAKA
+        kembalikan "Ganti 30% air kolam"
+    JIKA wq = Warning MAKA
+        kembalikan "Monitor ketat, siapkan air pengganti"
     JIKA TIDAK
-        kembalikan "Stay Calm"
+        kembalikan "Kondisi air ideal"
 ```
 
 ---
 
-## 6. Log keputusan (`decision_log.py`)
+## 6. Notifikasi (`notification_service.py`)
 
 ```
-PROSEDUR append_decision(suhu, ph, tds, predicted_ph, predicted_tds, reason, status):
-    pastikan folder logs ada
-    pastikan file CSV punya header jika file baru
+FUNGSI check_and_notify(db, wq, pred, suhu, ph, tds):
+    JIKA wq ∈ {Danger, Critical} ATAU pred.ai_status = WARNING_CHANGE_WATER MAKA
+        JIKA belum ada notifikasi serupa dalam window dedup MAKA
+            INSERT ke notifications (severity, title, message, category)
+        akhir JIKA
+    akhir JIKA
 
-    baris ← [timestamp_ISO_UTC, suhu, ph, tds, predicted_ph, predicted_tds, reason, status]
-    tambahkan baris ke decision_logs.csv (append)
+FUNGSI record_status_change(db, prev_status, new_status, suhu, ph, tds):
+    JIKA prev_status ≠ new_status MAKA
+        INSERT ke water_quality_events
+    akhir JIKA
 ```
 
 ---
 
-## 7. Dashboard React (`frontend/src/App.tsx`)
+## 7. Log keputusan (`decision_log.py`)
+
+```
+PROSEDUR append_decision(db, suhu, ph, tds, predicted_ph, predicted_tds, reason, status):
+    INSERT ke PostgreSQL decision_logs
+        (timestamp, suhu, ph, tds, predicted_ph, predicted_tds, reason, status)
+
+    // Opsional: append baris ke backend/logs/decision_logs.csv
+```
+
+---
+
+## 8. Dashboard React (`frontend/src/App.tsx` + components)
 
 ```
 PROSEDUR komponen App:
-    state: latest, history, error, loading, modal_terbuka
+    state: latest, history, notifications, events, error, loading
 
     PROSEDUR load_data():
-        COBA:
-            parallel: fetch GET /api/latest, GET /api/history
-            simpan ke state
-            JIKA action_required atau Danger atau WARNING MAKA
-                buka modal
-                JIKA izin Notification granted MAKA
-                    tampilkan notifikasi browser (teks sesuai kondisi)
-                akhir JIKA
-        TANGKAP error:
-            simpan pesan error
+        parallel fetch:
+            GET /api/latest
+            GET /api/history
+            GET /api/notifications
+            GET /api/events
+        simpan ke state
+
+        JIKA latest.action_required ATAU severity tinggi MAKA
+            JIKA izin Notification granted MAKA tampilkan browser notification
+        akhir JIKA
 
     saat mount:
         panggil load_data()
-        set interval setiap 30 detik → load_data()
-
-    saat mount (sekali):
-        minta izin Notification jika belum ditentukan
+        set interval 30 detik → load_data()
+        minta izin Notification (sekali)
 
     render:
-        header judul
-        panel status besar: hijau "Air sehat" ATAU merah "Action required"
-        tiga kartu: suhu, pH, TDS dari latest
-        kotak rekomendasi + teks prediksi opsional
-        grafik garis (Recharts) dari history.points — sumbu waktu vs suhu, ph, tds
-        JIKA modal_terbuka MAKA overlay instruksi ganti air + tombol tutup
+        StatusPanel      ← latest.water_quality_status (4 level)
+        MetricCard ×3    ← suhu, pH, TDS + zone badge + sparkline
+        SensorChart ×3   ← history 24h + reference band ideal
+        RecommendationBox← prediksi 15 min + rekomendasi AI
+        EventTimeline    ← GET /api/events
+        NotifBell        ← GET /api/notifications + unread count
 ```
 
 ---
 
-## 8. Ringkasan alur end-to-end
+## 9. Ringkasan alur end-to-end
 
 ```
-ESP32 → (JSON MQTT) → broker → bridge_s2 → InfluxDB
-                                    ↑
-Browser → React → FastAPI ─────────┘ (baca + aturan + prediksi + CSV log)
-Grafana → InfluxDB (visualisasi terpisah)
+Sensor (DS18B20 | pH 4502C | TDS)
+    → ESP32 (classify + edge filter + SHA256)
+    → MQTT broker
+    → bridge_s2.py
+    → InfluxDB (time-series)
+
+Browser → React Dashboard
+    → FastAPI (HRBAI + thresholds)
+        → InfluxDB (baca histori)
+        → PostgreSQL (notif, events, decisions)
+    → tampilkan chart + alert
+
+Grafana → InfluxDB (visualisasi analitik terpisah)
 ```
 
 ---
 
-_Untuk diagram arsitektur, lihat [ARCHITECTURE.md](ARCHITECTURE.md)._
+## 10. Placeholder pengembangan lanjutan
+
+```
+// ai_engine.py — rencana pengganti linear forecast:
+FUNGSI predict_status_lstm(rows):
+    muat model LSTM (.h5 / .pkl)
+    pred_ph, pred_tds, pred_suhu ← model.predict(sequence)
+    // belum diimplementasi pada fase prototipe saat ini
+```
+
+---
+
+_Untuk diagram arsitektur, lihat [ARCHITECTURE.md](ARCHITECTURE.md). Untuk setup dan kredensial, lihat [SETUP_STACK.md](SETUP_STACK.md)._
